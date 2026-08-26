@@ -143,8 +143,8 @@ export async function handleBuzzInbound(params: {
   });
   const replyTarget = {
     channelId,
-    threadId: message.threadId,
-    replyToId: message.threadId ?? message.id,
+    threadId: account.config.replyToMode === "off" ? undefined : message.threadId,
+    replyToId: account.config.replyToMode === "off" ? undefined : (message.threadId ?? message.id),
   };
 
   await runtime.channel.inbound.dispatch({
