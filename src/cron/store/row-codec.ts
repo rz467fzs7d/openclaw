@@ -14,6 +14,7 @@ import { tryCronScheduleIdentity } from "../schedule-identity.js";
 import {
   normalizeCronScheduledToolCallerOrigin,
   normalizeCronScheduledToolPolicy,
+  normalizeCronToolsAllowExecTarget,
 } from "../scheduled-tool-policy.js";
 import type {
   CronJobState,
@@ -331,6 +332,7 @@ function rowToCronJob(row: CronJobRow, jobJson: Record<string, unknown>): CronSt
           ),
         } as const)
       : undefined;
+  const toolsAllowExecTarget = normalizeCronToolsAllowExecTarget(jobJson.toolsAllowExecTarget);
   if (!schedule || !payload) {
     return null;
   }
@@ -351,6 +353,7 @@ function rowToCronJob(row: CronJobRow, jobJson: Record<string, unknown>): CronSt
       : {}),
     ...(scheduledToolPolicy ? { scheduledToolPolicy } : {}),
     ...(toolsAllowProvenance ? { toolsAllowProvenance } : {}),
+    ...(toolsAllowExecTarget ? { toolsAllowExecTarget } : {}),
     name: row.name,
     ...(row.description ? { description: row.description } : {}),
     enabled: row.enabled !== 0,

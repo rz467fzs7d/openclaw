@@ -785,6 +785,7 @@ export function buildGatewayCronService(params: {
                 scheduledToolPolicy: job.scheduledToolPolicy,
                 owner: job.owner,
               }),
+              execTarget: job.toolsAllowExecTarget,
               abortSignal,
             }),
         }
@@ -968,6 +969,7 @@ export function buildGatewayCronService(params: {
           scheduledToolPolicy: job.scheduledToolPolicy,
           owner: job.owner,
         }),
+        execTarget: job.toolsAllowExecTarget,
         timeoutSeconds: job.payload.timeoutSeconds,
         toolBudget: job.payload.toolBudget,
         abortSignal,

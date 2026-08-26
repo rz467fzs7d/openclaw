@@ -49,6 +49,7 @@ import {
   assertInheritedCronToolCaptureReady,
   capCronJobToolsAllowOnCreate,
   cronCreateRequiresCreatorAuthority,
+  resolveCronCreatorExecToolTarget,
 } from "./cron-tool-creator-cap.js";
 import {
   assertCronPacingInput,
@@ -239,6 +240,7 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
       };
       const runtimeConfig = getRuntimeConfig();
       const callerScope = resolveCronToolCallerScope(opts, runtimeConfig);
+      const creatorExecToolTarget = resolveCronCreatorExecToolTarget(opts?.creatorToolAllowlist);
       const callerIdentity =
         callerScope && opts?.agentSessionKey?.trim()
           ? {
@@ -250,7 +252,10 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
                 : {}),
               ...(opts?.creatorToolAllowlistCaptureRef?.value?.version === 1 &&
               opts.creatorToolAllowlistCaptureRef.value.source === "final-executable-surface"
-                ? { cronToolsAllowCapture: "final-executable-surface" as const }
+                ? {
+                    cronToolsAllowCapture: "final-executable-surface" as const,
+                    ...(creatorExecToolTarget ? { cronExecToolTarget: creatorExecToolTarget } : {}),
+                  }
                 : {}),
             }
           : undefined;
@@ -489,11 +494,17 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
                 }
               }
             }
+            const resolvedExecToolTarget = resolveCronCreatorExecToolTarget(
+              resolvedAuthority?.tools,
+            );
             const writeCallerIdentity =
               resolvedAuthority && callerIdentity
                 ? {
                     ...callerIdentity,
                     cronToolsAllowCapture: "final-executable-surface" as const,
+                    ...(resolvedExecToolTarget
+                      ? { cronExecToolTarget: resolvedExecToolTarget }
+                      : {}),
                     cronCreatorAuthorityGrant: resolvedAuthority.grant,
                   }
                 : callerIdentity;
@@ -564,15 +575,22 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
                 creatorToolAllowlistCaptureRef: opts?.creatorToolAllowlistCaptureRef,
                 resolveCreatorToolAuthority: opts?.resolveCreatorToolAuthority,
                 withCreatorAuthorityProvenance: callerIdentity
-                  ? async (authority, run) =>
-                      await withGatewayToolCallerIdentity(
+                  ? async (authority, run) => {
+                      const authorityExecToolTarget = resolveCronCreatorExecToolTarget(
+                        authority.tools,
+                      );
+                      return await withGatewayToolCallerIdentity(
                         {
                           ...callerIdentity,
                           cronToolsAllowCapture: "final-executable-surface",
+                          ...(authorityExecToolTarget
+                            ? { cronExecToolTarget: authorityExecToolTarget }
+                            : {}),
                           cronCreatorAuthorityGrant: authority.grant,
                         },
                         run,
-                      )
+                      );
+                    }
                   : undefined,
                 gatewayOpts,
                 callGateway,
