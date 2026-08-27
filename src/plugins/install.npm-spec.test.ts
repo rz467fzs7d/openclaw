@@ -1,5 +1,6 @@
 // Covers npm spec parsing for plugin install inputs.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +9,7 @@ import {
   mockNpmViewMetadataResult,
 } from "../test-utils/npm-spec-install-test-helpers.js";
 import {
+  resolveDefaultPluginNpmDir,
   resolvePluginNpmGenerationProjectDir,
   resolvePluginNpmProjectDir,
   resolvePluginNpmProjectsDir,
@@ -20,6 +22,7 @@ import { createSyncSuiteTempRootTracker } from "./test-helpers/fs-fixtures.js";
 
 const runCommandWithTimeoutMock = vi.fn();
 const resolveOpenClawPackageRootSyncMock = vi.fn();
+const persistPluginInstallMock = vi.fn();
 
 vi.mock("../process/exec.js", () => ({
   runCommandWithTimeout: (...args: unknown[]) => runCommandWithTimeoutMock(...args),
@@ -30,10 +33,16 @@ vi.mock("../infra/openclaw-root.js", () => ({
     resolveOpenClawPackageRootSyncMock(...args),
 }));
 
+vi.mock("./install-persistence.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./install-persistence.js")>()),
+  persistPluginInstall: (...args: unknown[]) => persistPluginInstallMock(...args),
+}));
+
 vi.resetModules();
 
 const { installPluginFromNpmPackArchive, installPluginFromNpmSpec, PLUGIN_INSTALL_ERROR_CODE } =
   await import("./install.js");
+const { installManagedPluginSource } = await import("./management-service.js");
 const { classifyNpmManagedOverrideCompatibilityError } =
   await import("./install-managed-npm-state.js");
 
@@ -619,6 +628,7 @@ afterAll(() => {
 beforeEach(() => {
   runCommandWithTimeoutMock.mockReset();
   resolveOpenClawPackageRootSyncMock.mockReset();
+  persistPluginInstallMock.mockReset();
   const hostRoot = suiteTempRootTracker.makeTempDir();
   fs.writeFileSync(
     path.join(hostRoot, "package.json"),
@@ -819,6 +829,136 @@ describe("installPluginFromNpmSpec", () => {
     expect(dependencySpec).not.toContain(archivePath);
     expect(stagedArchiveContents).toBe("fixture pack contents");
   });
+
+  it.each([
+    { settlement: "rollback" as const, persistenceFails: true },
+    { settlement: "commit" as const, persistenceFails: false },
+  ])(
+    "$settlement settles a forced npm-pack replacement only after persistence",
+    async ({ persistenceFails }) => {
+      const root = suiteTempRootTracker.makeTempDir();
+      const env = { HOME: root, OPENCLAW_STATE_DIR: path.join(root, "state") };
+      vi.stubEnv("HOME", root);
+      vi.stubEnv("OPENCLAW_STATE_DIR", env.OPENCLAW_STATE_DIR);
+      const npmRoot = resolveDefaultPluginNpmDir(env);
+      const packageName = "@openclaw/pack-transaction";
+      const archiveAPath = path.join(root, "pack-transaction-a.tgz");
+      const archiveBPath = path.join(root, "pack-transaction-b.tgz");
+      const metadata = {
+        packageName,
+        version: "1.0.0",
+        pluginId: "pack-transaction",
+        npmRoot,
+        integrity: "sha512-pack-transaction",
+        shasum: "packtransactionsha",
+        packTarballName: "openclaw-pack-transaction-1.0.0.tgz",
+      };
+      const snapshot = {
+        config: {},
+        baseHash: "base-hash",
+        writeOptions: {
+          expectedConfigPath: path.join(root, "openclaw.json"),
+          includeFileHashesForWrite: {},
+          includeFileTargetsForWrite: {},
+        },
+      };
+      fs.writeFileSync(archiveAPath, "archive A", "utf8");
+      fs.writeFileSync(archiveBPath, "archive B", "utf8");
+
+      let durableSourcePath: string | undefined;
+      let custodyPresentDuringPersistence = false;
+      const custodyDirs: string[] = [];
+      const mkdtemp = fs.promises.mkdtemp.bind(fs.promises);
+      const mkdtempSpy = vi
+        .spyOn(fs.promises, "mkdtemp")
+        .mockImplementation(async (prefix: string) => {
+          const dir = await mkdtemp(prefix);
+          if (
+            prefix.startsWith(path.join(os.tmpdir(), "openclaw-npm-plugin-rollback-")) ||
+            prefix.startsWith(path.join(os.tmpdir(), "openclaw-npm-pack-archive-"))
+          ) {
+            custodyDirs.push(dir);
+          }
+          return dir;
+        });
+
+      const installArchive = async (archivePath: string, mode: "install" | "update") =>
+        await installManagedPluginSource({
+          request: { source: "npm-pack", archivePath, mode },
+          snapshot,
+          env,
+        });
+
+      try {
+        persistPluginInstallMock.mockImplementation(async (params: unknown) => {
+          const install = (params as { install: { sourcePath?: string } }).install;
+          durableSourcePath = install.sourcePath;
+          return {};
+        });
+        mockNpmViewAndInstallMany([
+          { ...metadata, packArchivePath: archiveAPath, indexJs: 'export const generation = "A";' },
+        ]);
+        const initialInstall = await installArchive(archiveAPath, "install");
+        if (!initialInstall.ok) {
+          throw new Error(initialInstall.error);
+        }
+
+        mockNpmViewAndInstallMany([
+          { ...metadata, packArchivePath: archiveAPath, indexJs: 'export const generation = "A";' },
+        ]);
+        const generationInstall = await installArchive(archiveAPath, "update");
+        if (!generationInstall.ok || !generationInstall.targetDir) {
+          throw new Error(
+            generationInstall.ok
+              ? "npm-pack install did not return a target"
+              : generationInstall.error,
+          );
+        }
+        const packageDir = generationInstall.targetDir;
+        const generationRoot = path.resolve(packageDir, "../../..");
+        const treeA = readTextFileTree(generationRoot);
+        expect(fs.readFileSync(path.join(packageDir, "dist", "index.js"), "utf8")).toContain('"A"');
+        expect(durableSourcePath).toBe(archiveAPath);
+
+        custodyDirs.length = 0;
+        const persistenceConflict = new Error("config changed during npm-pack install");
+        persistPluginInstallMock.mockImplementation(async (params: unknown) => {
+          const install = (params as { install: { sourcePath?: string } }).install;
+          expect(fs.readFileSync(path.join(packageDir, "dist", "index.js"), "utf8")).toContain(
+            '"B"',
+          );
+          custodyPresentDuringPersistence =
+            custodyDirs.length >= 2 && custodyDirs.every((dir) => fs.existsSync(dir));
+          if (persistenceFails) {
+            throw persistenceConflict;
+          }
+          durableSourcePath = install.sourcePath;
+          return {};
+        });
+        mockNpmViewAndInstallMany([
+          { ...metadata, packArchivePath: archiveBPath, indexJs: 'export const generation = "B";' },
+        ]);
+
+        const replacement = installArchive(archiveBPath, "update");
+        if (persistenceFails) {
+          await expect(replacement).rejects.toBe(persistenceConflict);
+          expect(readTextFileTree(generationRoot)).toEqual(treeA);
+          expect(durableSourcePath).toBe(archiveAPath);
+        } else {
+          await expect(replacement).resolves.toMatchObject({ ok: true });
+          expect(fs.readFileSync(path.join(packageDir, "dist", "index.js"), "utf8")).toContain(
+            '"B"',
+          );
+          expect(durableSourcePath).toBe(archiveBPath);
+        }
+        expect(custodyPresentDuringPersistence).toBe(true);
+        expect(custodyDirs.length).toBeGreaterThanOrEqual(2);
+        expect(custodyDirs.every((dir) => !fs.existsSync(dir))).toBe(true);
+      } finally {
+        mkdtempSpy.mockRestore();
+      }
+    },
+  );
 
   it("rejects npm pack archive metadata with traversal package names", async () => {
     const stateDir = suiteTempRootTracker.makeTempDir();

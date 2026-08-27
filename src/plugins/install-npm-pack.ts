@@ -25,6 +25,7 @@ import {
   loadPluginInstallRuntime,
   resolveEffectiveInstallMode,
 } from "./install-shared.js";
+import { copyPluginInstallTransactionRequest } from "./install-transaction.js";
 import {
   PLUGIN_INSTALL_ERROR_CODE,
   type InstallPluginResult,
@@ -232,7 +233,9 @@ export async function installPluginFromNpmPackArchive(
         ? "install"
         : targetMode;
 
-  const result = await installPluginFromManagedNpmRoot({
+  const managedNpmParams = copyPluginInstallTransactionRequest<
+    Parameters<typeof installPluginFromManagedNpmRoot>[0]
+  >(params, {
     dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,
     onInstallPolicyWarning: params.onInstallPolicyWarning,
     trustedSourceLinkedOfficialInstall: params.trustedSourceLinkedOfficialInstall,
@@ -278,6 +281,7 @@ export async function installPluginFromNpmPackArchive(
     npmResolution,
     ...(driftResult.integrityDrift ? { integrityDrift: driftResult.integrityDrift } : {}),
   });
+  const result = await installPluginFromManagedNpmRoot(managedNpmParams);
   emitSuccessfulPluginInstallSecurityEvent(result, {
     dryRun,
     mode: policyMode,
