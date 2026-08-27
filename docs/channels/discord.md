@@ -672,6 +672,8 @@ See [Slash commands](/tools/slash-commands) for the command catalog and behavior
 
     Introductions are enabled by default, apply only to newly joined servers, and never run in direct messages. Set `channels.discord.joinIntro: false` to disable them, or set `channels.discord.accounts.<accountId>.joinIntro` to override one account.
 
+    Reconnecting does not repeat an introduction, even if the selected channel changes. Removing and reinviting the bot is a new join and can produce a new introduction.
+
   </Accordion>
 
   <Accordion title="Reply tags and native replies">

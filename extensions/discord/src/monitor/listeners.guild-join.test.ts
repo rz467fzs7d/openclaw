@@ -102,6 +102,7 @@ describe("Discord guild join introductions", () => {
   });
 
   it("introduces the bot in the permitted system channel using readable room context", async () => {
+    const event = guildCreateEvent();
     mocks.readMessagesDiscord.mockResolvedValue([
       {
         content: "Newest deployment",
@@ -110,7 +111,7 @@ describe("Discord guild join introductions", () => {
       { content: "Older rollout", author: { username: "alex", global_name: null } } as APIMessage,
     ]);
 
-    await createListener().handle(guildCreateEvent(), createClient());
+    await createListener().handle(event, createClient());
 
     expect(reportChannelRoomJoin).toHaveBeenCalledOnce();
     const params = vi.mocked(reportChannelRoomJoin).mock.calls[0]?.[0];
@@ -118,6 +119,7 @@ describe("Discord guild join introductions", () => {
       channel: "discord",
       accountId: "work",
       conversationId: "guild-1",
+      joinEventId: event.joined_at,
       deliverTo: "channel:system-channel",
       roomAllowed: true,
     });
@@ -142,6 +144,40 @@ describe("Discord guild join introductions", () => {
         { sender: "Casey", text: "Newest deployment" },
       ],
     });
+  });
+
+  it("preserves a guild join identity across destination changes and distinguishes a rejoin", async () => {
+    const joinedAt = new Date(Date.now() - 60_000).toISOString();
+    const rejoinedAt = new Date(Date.now() - 1_000).toISOString();
+    const listener = createListener();
+    const client = createClient();
+    const events = [
+      guildCreateEvent({ joined_at: joinedAt }),
+      guildCreateEvent({ joined_at: joinedAt, system_channel_id: "fallback-channel" }),
+      guildCreateEvent({ joined_at: rejoinedAt, system_channel_id: "fallback-channel" }),
+    ];
+
+    for (const event of events) {
+      await listener.handle(event, client);
+    }
+
+    expect(vi.mocked(reportChannelRoomJoin).mock.calls.map(([params]) => params)).toEqual([
+      expect.objectContaining({
+        conversationId: "guild-1",
+        joinEventId: joinedAt,
+        deliverTo: "channel:system-channel",
+      }),
+      expect.objectContaining({
+        conversationId: "guild-1",
+        joinEventId: joinedAt,
+        deliverTo: "channel:fallback-channel",
+      }),
+      expect.objectContaining({
+        conversationId: "guild-1",
+        joinEventId: rejoinedAt,
+        deliverTo: "channel:fallback-channel",
+      }),
+    ]);
   });
 
   it("never introduces the bot for a stale guild-create reconnect snapshot", async () => {

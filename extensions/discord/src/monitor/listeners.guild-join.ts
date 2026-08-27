@@ -126,6 +126,7 @@ export class DiscordGuildJoinIntroductionListener extends GuildCreateListener {
       channel: "discord",
       accountId: this.params.accountId,
       conversationId: data.id,
+      joinEventId: data.joined_at,
       deliverTo: `channel:${selectedChannel.id}`,
       route: resolveAgentRoute({
         cfg: this.params.cfg,

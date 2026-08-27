@@ -37,6 +37,8 @@ type ChannelJoinIntroParams = {
   channel: string;
   accountId?: string;
   conversationId: string;
+  /** Native identity: stable on replay, distinct when the bot joins again. */
+  joinEventId: string;
   deliverTo: string;
   threadId?: string | number;
   route: { agentId: string; sessionKey: string };
@@ -55,6 +57,7 @@ function logChannelJoinIntroOutcome(
     channel: params.channel,
     accountId: params.accountId,
     conversationId: params.conversationId,
+    joinEventId: params.joinEventId,
     kind: outcome.kind,
     ...(outcome.kind !== "posted" ? { reason: outcome.reason } : {}),
   };
@@ -110,7 +113,8 @@ export async function reportChannelRoomJoin(
 
   const dedupe = resolveChannelJoinIntroDedupe(params.channel);
   const accountId = normalizeAccountId(params.accountId);
-  const dedupeKey = JSON.stringify([params.channel, accountId, params.conversationId]);
+  // The plugin store scopes by channel; the occurrence separates rejoins from replays.
+  const dedupeKey = JSON.stringify([accountId, params.conversationId, params.joinEventId]);
   try {
     // Reconnects can replay join events, so a durable claim must outlive the current process.
     const claim = await runClaimableDedupeClaimLoop(
@@ -202,6 +206,7 @@ export async function reportChannelRoomJoin(
           channel: params.channel,
           accountId: params.accountId,
           conversationId: params.conversationId,
+          joinEventId: params.joinEventId,
           error: formatErrorMessage(error),
         }),
     });

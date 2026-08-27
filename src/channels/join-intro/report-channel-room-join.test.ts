@@ -26,6 +26,7 @@ function createJoinParams(conversationId: string, cfg: OpenClawConfig = {}) {
     cfg,
     channel: "slack",
     conversationId,
+    joinEventId: "first-join",
     deliverTo: `channel:${conversationId}`,
     roomAllowed: true,
     route: { agentId: "main", sessionKey: `agent:main:slack:channel:${conversationId}` },
@@ -95,20 +96,31 @@ describe("reportChannelRoomJoin", () => {
     expect(runCronIsolatedAgentTurn).not.toHaveBeenCalled();
   });
 
-  it("persists a successful introduction and sends nothing when the same room join replays", async () => {
-    const params = createJoinParams("replayed");
-    const rowsBefore = countPluginStateLiveEntries("slack");
+  it.each(["discord", "slack", "telegram"])(
+    "%s introduces a new membership but suppresses join replays even when the delivery target changes",
+    async (channel) => {
+      const params = { ...createJoinParams("replayed"), channel };
+      const rowsBefore = countPluginStateLiveEntries(channel);
 
-    await expect(reportChannelRoomJoin(params)).resolves.toEqual({ kind: "posted" });
-    await expect(reportChannelRoomJoin(params)).resolves.toEqual({
-      kind: "skipped",
-      reason: "already-introduced",
-    });
+      await expect(reportChannelRoomJoin(params)).resolves.toEqual({ kind: "posted" });
+      await expect(
+        reportChannelRoomJoin({ ...params, deliverTo: "another-target" }),
+      ).resolves.toEqual({
+        kind: "skipped",
+        reason: "already-introduced",
+      });
 
-    expect(countPluginStateLiveEntries("slack")).toBe(rowsBefore + 1);
-    expect(params.resolveRoomContext).toHaveBeenCalledExactlyOnceWith({ messageLimit: 30 });
-    expect(runCronIsolatedAgentTurn).toHaveBeenCalledOnce();
-  });
+      const rejoin = { ...params, joinEventId: "second-join" };
+      await expect(reportChannelRoomJoin(rejoin)).resolves.toEqual({ kind: "posted" });
+      await expect(reportChannelRoomJoin(rejoin)).resolves.toEqual({
+        kind: "skipped",
+        reason: "already-introduced",
+      });
+      expect(countPluginStateLiveEntries(channel)).toBe(rowsBefore + 2);
+      expect(params.resolveRoomContext).toHaveBeenCalledTimes(2);
+      expect(runCronIsolatedAgentTurn).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("never repeats a delivered introduction when its durable commit fails", async () => {
     const params = createJoinParams("commit-failed");

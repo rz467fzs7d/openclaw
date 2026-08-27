@@ -31,10 +31,10 @@ function succeed(res: ServerResponse, result: unknown = true) {
   writeJson(res, 200, { ok: true, result });
 }
 
-function joinUpdate() {
+function joinUpdate(updateId = 1) {
   const bot = { id: BOT_ID, is_bot: true, first_name: "QA Harbor", username: "qa_harbor_bot" };
   return {
-    update_id: 1,
+    update_id: updateId,
     my_chat_member: {
       chat: { id: CHAT_ID, type: "supergroup", title: ROOM_TITLE },
       from: { id: 1357, is_bot: false, first_name: "Harbor Organizer" },
@@ -108,11 +108,13 @@ async function settleCleanup(...cleanups: Array<() => Promise<void>>) {
   }
 }
 
-test("introduces itself once when Telegram reports joining an allowed supergroup", async () => {
+test("introduces itself once per Telegram membership while suppressing replays", async () => {
   const telegramCalls: TelegramCall[] = [];
   const pendingUpdates: unknown[] = [];
   const pendingPolls = new Set<ServerResponse>();
   let groundedModelResponses = 0;
+  let failNextRoomLookup = false;
+  let failedRoomLookups = 0;
   let mock: Awaited<ReturnType<typeof startQaMockOpenAiServer>> | undefined;
 
   const queueUpdate = (update: unknown) => {
@@ -197,6 +199,12 @@ test("introduces itself once when Telegram reports joining an allowed supergroup
       return;
     }
     if (method === "getChat") {
+      if (failNextRoomLookup) {
+        failNextRoomLookup = false;
+        failedRoomLookups += 1;
+        writeJson(res, 503, { ok: false, error_code: 503, description: "Room lookup unavailable" });
+        return;
+      }
       succeed(res, {
         id: CHAT_ID,
         type: "supergroup",
@@ -332,6 +340,30 @@ test("introduces itself once when Telegram reports joining an allowed supergroup
           expect(introRequest?.allInputText).toEqual(
             expect.stringContaining(UNAVAILABLE_HISTORY_FACT),
           );
+          expect(introRequest?.body.tools ?? []).toEqual([]);
+
+          // Process a replay before the later join in the same chat's ingress lane.
+          failNextRoomLookup = true;
+          queueUpdate(joinUpdate());
+          queueUpdate(joinUpdate(2));
+          await expect
+            .poll(
+              () => ({
+                deliveries: telegramCalls.filter((call) => call.method === "sendMessage").length,
+                groundedModelResponses,
+                failedRoomLookups,
+              }),
+              { interval: 50, timeout: 30_000 },
+            )
+            .toEqual({ deliveries: 2, groundedModelResponses: 2, failedRoomLookups: 1 });
+          expect(
+            telegramCalls
+              .filter((call) => call.method === "sendMessage")
+              .map((call) => ({ chatId: String(call.body.chat_id), text: call.body.text })),
+          ).toEqual([
+            { chatId: String(CHAT_ID), text: expect.stringContaining(ROOM_TITLE) },
+            { chatId: String(CHAT_ID), text: expect.stringContaining(ROOM_TITLE) },
+          ]);
         } finally {
           await settleCleanup(
             async () => await gateway?.stop(),

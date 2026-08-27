@@ -176,6 +176,7 @@ describe("registerSlackMemberEvents", () => {
         accountId: "default",
         conversationId: "C1",
         deliverTo: "channel:C1",
+        joinEventId: "Ev-self-join",
         inviterLabel: "Morgan",
         roomAllowed: true,
         route: { agentId: "main", sessionKey: "agent:main:main" },
@@ -229,6 +230,61 @@ describe("registerSlackMemberEvents", () => {
     expect(memberMocks.enqueue).not.toHaveBeenCalled();
   });
 
+  it("preserves self-join occurrences and workspace identity for detached introductions", async () => {
+    const harness = initSlackHarness({ channelType: "channel" });
+    harness.ctx.cfg = { channels: { slack: { groupPolicy: "open" } } };
+    harness.ctx.accountId = "default";
+    harness.ctx.installationIdentity = {
+      kind: "enterprise",
+      apiAppId: "A_GRID",
+      enterpriseId: "E_GRID",
+    };
+    harness.ctx.resolveSlackSystemEventRoute = (input) => ({
+      agentId: "main",
+      sessionKey: `session:${input.eventScope?.teamId}`,
+    });
+    registerSlackMemberEvents({ ctx: harness.ctx });
+    const handler = harness.getHandler("member_joined_channel");
+    if (!handler) {
+      throw new Error("expected Slack member joined handler");
+    }
+    const occurrences = [
+      { teamId: "T111", eventId: "Ev-first-join" },
+      { teamId: "T111", eventId: "Ev-first-join" },
+      { teamId: "T111", eventId: "Ev-rejoin" },
+      { teamId: "T222", eventId: "Ev-other-workspace" },
+    ];
+    for (const { teamId, eventId } of occurrences) {
+      await handler({
+        event: makeMemberEvent({ channel: "C1", user: "U_BOT" }),
+        body: { api_app_id: "A_GRID", event_id: eventId },
+        context: {
+          isEnterpriseInstall: true,
+          enterpriseId: "E_GRID",
+          teamId,
+        } as AllMiddlewareArgs["context"],
+        client: { token: `listener-${teamId}` } as AllMiddlewareArgs["client"],
+      });
+    }
+
+    expect(
+      memberMocks.reportJoin.mock.calls.map(([request]) => ({
+        conversationId: request.conversationId,
+        deliverTo: request.deliverTo,
+        joinEventId: request.joinEventId,
+        route: request.route,
+      })),
+    ).toEqual(
+      occurrences.map(({ teamId, eventId }) => ({
+        conversationId: `team:${teamId}:C1`,
+        deliverTo: `team:${teamId}:channel:C1`,
+        joinEventId: eventId,
+        route: { agentId: "main", sessionKey: `session:${teamId}` },
+      })),
+    );
+    expect(memberMocks.enqueue).not.toHaveBeenCalled();
+  });
+
   it("keeps room metadata when Slack denies the joined room's message history", async () => {
     const harness = initSlackHarness({ channelType: "group" });
     harness.ctx.cfg = { channels: { slack: { groupPolicy: "open" } } };
@@ -270,10 +326,41 @@ describe("registerSlackMemberEvents", () => {
     );
   });
 
-  it("never introduces the bot into a direct-message conversation", async () => {
-    await runMemberCase({
-      overrides: { dmPolicy: "open" },
-      event: makeMemberEvent({ channel: "D1", user: "U_BOT" }),
+  it.each([
+    { name: "direct message", channelId: "D1", channelType: "im" as const },
+    { name: "group direct message", channelId: "G1", channelType: "mpim" as const },
+  ])(
+    "never introduces the bot into a $name with native member-event channel types",
+    async ({ channelId, channelType }) => {
+      await runMemberCase({
+        overrides: { dmPolicy: "open", channelType },
+        event: {
+          ...makeMemberEvent({ channel: channelId, user: "U_BOT" }),
+          channel_type: channelId[0],
+        },
+      });
+
+      expect(memberMocks.reportJoin).not.toHaveBeenCalled();
+    },
+  );
+
+  it("skips a self-join when lookup failure leaves the conversation type unknown", async () => {
+    const harness = initSlackHarness({ channelType: "mpim" });
+    harness.ctx.cfg = { channels: { slack: { groupPolicy: "open" } } };
+    harness.ctx.accountId = "default";
+    harness.ctx.resolveChannelName = vi.fn(async () => ({}));
+    registerSlackMemberEvents({ ctx: harness.ctx });
+    const handler = harness.getHandler("member_joined_channel");
+    if (!handler) {
+      throw new Error("expected Slack member joined handler");
+    }
+
+    await handler({
+      event: {
+        ...makeMemberEvent({ channel: "G1", user: "U_BOT" }),
+        channel_type: "G",
+      },
+      body: { event_id: "Ev-self-unknown-type" },
     });
 
     expect(memberMocks.reportJoin).not.toHaveBeenCalled();
