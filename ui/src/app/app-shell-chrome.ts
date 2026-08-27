@@ -20,7 +20,7 @@ import {
 } from "../components/panel-toggle-contract.ts";
 import { rememberSessionPanelToggle } from "../components/session-panel-toggle-buffer.ts";
 import type { BoardFace } from "../lib/board/settings.ts";
-import { canCallGatewayMethod, isGatewayMethodAdvertised } from "../lib/gateway-methods.ts";
+import { canCallGatewayMethod } from "../lib/gateway-methods.ts";
 import {
   KEYBOARD_SHORTCUT_COMBOS,
   matchesShortcutCombo,
@@ -51,7 +51,7 @@ import {
   type NativeHistoryState,
 } from "./native-web-chrome.ts";
 import type { NavDrawerSwipeOwner } from "./nav-drawer-swipe.ts";
-import { hasOperatorAdminAccess } from "./operator-access.ts";
+import { isBrowserPanelAvailable, isDesktopPanelAvailable } from "./panel-availability.ts";
 import { NAV_WIDTH_MAX, NAV_WIDTH_MIN } from "./settings.ts";
 
 type AppSidebarElement = HTMLElement & {
@@ -66,26 +66,6 @@ type KeyboardShortcutsDialogElement = HTMLElement & {
   isOpen: boolean;
   toggle: () => void;
 };
-
-export function isBrowserPanelAvailable(
-  snapshot: ApplicationContext["gateway"]["snapshot"],
-): boolean {
-  return (
-    snapshot.phase === "connected" &&
-    hasOperatorAdminAccess(snapshot.hello?.auth ?? null) &&
-    isGatewayMethodAdvertised(snapshot, "browser.request") === true
-  );
-}
-
-export function isDesktopPanelAvailable(
-  snapshot: ApplicationContext["gateway"]["snapshot"],
-): boolean {
-  return (
-    snapshot.phase === "connected" &&
-    hasOperatorAdminAccess(snapshot.hello?.auth ?? null) &&
-    isGatewayMethodAdvertised(snapshot, "desktop.observe") === true
-  );
-}
 
 export interface ShellChromeHost extends HTMLElement {
   readonly context: ApplicationContext<RouteId> | undefined;
@@ -122,7 +102,17 @@ export interface ShellChromeHost extends HTMLElement {
 export class ShellChromeOwner {
   private pendingLazyAction = readLazyShellAction();
   private navDrawerSwipeOwner: NavDrawerSwipeOwner | null = null;
-  private navDrawerSwipeOwnerLoad: Promise<NavDrawerSwipeOwner> | null = null;
+  private readonly navDrawerSwipeOwnerLoad = import("./nav-drawer-swipe.ts").then(
+    ({ NavDrawerSwipeOwner }) => {
+      const owner = new NavDrawerSwipeOwner(
+        this.host,
+        () => isMobileNavLayout() && !this.host.navDrawerOpen && !this.host.onboardingMode,
+        () => this.toggleNavigationSurface(),
+      );
+      this.navDrawerSwipeOwner = owner;
+      return owner;
+    },
+  );
 
   constructor(private readonly host: ShellChromeHost) {}
 
@@ -158,7 +148,7 @@ export class ShellChromeOwner {
     window.addEventListener(DESKTOP_PANEL_TOGGLE_EVENT, this.handleDeferredDesktopToggle);
     window.addEventListener(CUSTODIAN_PANEL_TOGGLE_EVENT, this.handleDeferredCustodianToggle);
     window.addEventListener(SHELL_APPROVALS_OPEN_EVENT, this.handleApprovalsOpen);
-    void this.loadNavDrawerSwipeOwner();
+    void this.navDrawerSwipeOwnerLoad.then((owner) => host.isConnected && owner.connect());
   }
 
   disconnect(): void {
@@ -188,24 +178,6 @@ export class ShellChromeOwner {
     window.removeEventListener(SHELL_APPROVALS_OPEN_EVENT, this.handleApprovalsOpen);
     this.navDrawerSwipeOwner?.disconnect();
     this.navDrawerSwipeOwner = null;
-    this.navDrawerSwipeOwnerLoad = null;
-  }
-
-  private loadNavDrawerSwipeOwner(): Promise<NavDrawerSwipeOwner> {
-    return (this.navDrawerSwipeOwnerLoad ??= import("./nav-drawer-swipe.ts").then(
-      ({ NavDrawerSwipeOwner }) => {
-        const owner = new NavDrawerSwipeOwner(
-          this.host,
-          () => isMobileNavLayout() && !this.host.navDrawerOpen && !this.host.onboardingMode,
-          () => this.toggleNavigationSurface(),
-        );
-        this.navDrawerSwipeOwner = owner;
-        if (this.host.isConnected) {
-          owner.connect();
-        }
-        return owner;
-      },
-    ));
   }
 
   toggleNavigationSurface(trigger?: HTMLElement): void {
@@ -221,7 +193,7 @@ export class ShellChromeOwner {
         return;
       }
       host.navDrawerTrigger = trigger ?? this.visibleNavDrawerToggle() ?? null;
-      void this.loadNavDrawerSwipeOwner().then(async (owner) => {
+      void this.navDrawerSwipeOwnerLoad.then(async (owner) => {
         if (!host.isConnected || host.navDrawerOpen || !isMobileNavLayout()) {
           return;
         }
