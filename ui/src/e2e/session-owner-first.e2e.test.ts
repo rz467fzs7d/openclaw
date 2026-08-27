@@ -64,7 +64,8 @@ suite.define(() => {
     });
 
     try {
-      await page.goto(`${suite.server?.baseUrl ?? ""}chat`);
+      // A literal key keeps route resolution from querying the still-deferred roster.
+      await page.goto(`${suite.server?.baseUrl ?? ""}chat/main/~key/ada`);
       const subscribe = await gateway.waitForRequest("sessions.subscribe");
       expect(subscribe.params).toEqual(expect.objectContaining({ ownerFirst: true, limit: 60 }));
       expect(await gateway.getRequests("sessions.list")).toHaveLength(0);
@@ -77,6 +78,7 @@ suite.define(() => {
       await gateway.resolveDeferred("sessions.subscribe", { subscribed: true, list: sharedRoster });
       await adaRow.waitFor();
       await bobRow.waitFor();
+      expect(await gateway.getRequests("sessions.list")).toHaveLength(0);
       await captureSidebar(page, "owner-first-bootstrap.png");
     } finally {
       await context.close();

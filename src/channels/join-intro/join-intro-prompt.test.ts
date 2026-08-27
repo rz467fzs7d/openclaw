@@ -8,17 +8,30 @@ describe("buildChannelJoinIntroPrompt", () => {
         title: "#releases",
         recentMessages: Array.from({ length: 30 }, (_, index) => ({
           sender: `sender-${String(index).padStart(2, "0")}`,
-          text: `message-${String(index).padStart(2, "0")} ${"details ".repeat(35)}`,
+          text: `message-${String(index).padStart(2, "0")} ${"details ".repeat(10)}`,
         })),
       },
     });
     const snapshot = prompt.split("\n\nRoom context:\n")[1];
 
     expect(snapshot).toBeDefined();
-    expect(snapshot?.length).toBeLessThanOrEqual(3_200);
+    expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(1_024);
     expect(snapshot).toContain("message-29");
+    expect(snapshot).toContain("message-28");
     expect(snapshot).not.toContain("message-00");
     expect(snapshot?.indexOf("message-28")).toBeLessThan(snapshot?.indexOf("message-29") ?? -1);
+  });
+
+  it.each(["界", "𠀀", "🦞"])("keeps Unicode %s within the complete prompt budget", (text) => {
+    for (const context of [
+      { title: text.repeat(3_200) },
+      { recentMessages: [{ text: text.repeat(3_200) }] },
+    ]) {
+      const prompt = buildChannelJoinIntroPrompt({ context });
+
+      expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(1_024);
+      expect(prompt).not.toMatch(/\p{Surrogate}/u);
+    }
   });
 
   it("grounds unreadable room history in visible room facts and asks what the room needs", () => {
